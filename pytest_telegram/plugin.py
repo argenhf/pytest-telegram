@@ -4,14 +4,6 @@ import pytest
 import requests
 from requests import exceptions
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(filename='test.log'),
-        logging.StreamHandler()
-    ]
-)
 logging.getLogger(__name__)
 
 def pytest_addoption(parser):
