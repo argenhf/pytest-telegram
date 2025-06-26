@@ -72,7 +72,7 @@ class TestResultsFormatter:
         
         timing_section = self._format_timing_section()
         env_section = f"\n‎ ⛺ Environment: *{env}*"
-        url_section = f"\n{report_url}" if report_url else ""
+        url_section = f"\n 🤓 Report url: *{report_url}*" if report_url else ""
         
         return f"{results_section}{timing_section}{env_section}{url_section}"
     
