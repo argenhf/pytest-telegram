@@ -3,12 +3,13 @@ import logging
 from typing import Optional, Dict, List, Any
 import pytest
 import requests
+from _pytest.stash import StashKey
 
 logger = logging.getLogger(__name__)
 
 _session_start_time: Optional[float] = None
 _retry_info: Dict[str, Dict] = {}
-_test_attempt_counter: Dict[str, int] = {}
+retry_key = StashKey[int]()
 
 
 class TelegramConfig:
@@ -160,10 +161,9 @@ class TelegramNotifier:
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_sessionstart(session):
-    global _session_start_time, _retry_info, _test_attempt_counter
+    global _session_start_time, _retry_info
     _session_start_time = time.time()
     _retry_info = {}
-    _test_attempt_counter = {}
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -177,17 +177,14 @@ def pytest_runtest_makereport(item, call):
 
     nodeid = item.nodeid
 
-    attempt = None
-    for attr in ["execution_count", "_pytest_retry_count", "_retry_count", "retries"]:
-        if hasattr(item, attr):
-            attempt = getattr(item, attr)
-            break
-
-    if attempt is None:
-        attempt = 1
+    # Try to fetch retry attempt using stash if available
+    attempt = item.stash.get(retry_key, 0) + 1
 
     if nodeid not in _retry_info:
-        _retry_info[nodeid] = {'attempts': attempt, 'final_result': report.outcome}
+        _retry_info[nodeid] = {
+            'attempts': attempt,
+            'final_result': report.outcome
+        }
     else:
         _retry_info[nodeid]['attempts'] = max(_retry_info[nodeid]['attempts'], attempt)
         _retry_info[nodeid]['final_result'] = report.outcome
