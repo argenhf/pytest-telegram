@@ -82,6 +82,25 @@ class TestResultsFormatter:
             "\n\n*End of test retry report.*"
         )
 
+    def format_failed_tests_message(self) -> Optional[str]:
+        failed_tests = self.stats.get('failed', [])
+        error_tests = self.stats.get('error', [])
+
+        if not failed_tests and not error_tests:
+            return None
+
+        failed_details = []
+
+        for test_report in failed_tests + error_tests:
+            nodeid = test_report.nodeid
+            if hasattr(test_report.longrepr, 'reprcrash'):
+                message = test_report.longrepr.reprcrash.message
+            else:
+                message = str(test_report.longrepr)
+            failed_details.append(f"❌ `{nodeid}`\n    {message}")
+
+        return "*Failed tests:*\n\n" + '\n\n'.join(failed_details)
+
 
 class TelegramNotifier:
     def __init__(self, config: TelegramConfig):
@@ -94,6 +113,7 @@ class TelegramNotifier:
                 message_id = self._send_sticker(formatter.has_failures)
 
             self._send_summary_message(formatter, message_id)
+            self._send_failed_tests_message(formatter)
             self._send_retry_output_message(formatter)
 
         except requests.RequestException as e:
@@ -124,6 +144,17 @@ class TelegramNotifier:
         payload = {
             'chat_id': self.config.chat_id,
             'text': retry_message,
+            'parse_mode': 'Markdown'
+        }
+        self._make_request('/sendMessage', payload)
+
+    def _send_failed_tests_message(self, formatter: TestResultsFormatter) -> None:
+        failed_message = formatter.format_failed_tests_message()
+        if not failed_message:
+            return
+        payload = {
+            'chat_id': self.config.chat_id,
+            'text': failed_message,
             'parse_mode': 'Markdown'
         }
         self._make_request('/sendMessage', payload)
