@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 _session_start_time: Optional[float] = None
 _retry_info: Dict[str, Dict] = {}
+_retry_messages: List[str] = []
 retry_key = StashKey[int]()
 
 
@@ -32,11 +33,12 @@ class TelegramConfig:
 
 
 class TestResultsFormatter:
-    def __init__(self, stats: Dict[str, List], session_start_time: float, retry_info: Dict[str, Dict]):
+    def __init__(self, stats: Dict[str, List], session_start_time: float, retry_info: Dict[str, Dict], retry_messages: List[str]):
         self.stats = stats
         self.session_start_time = session_start_time
         self.session_duration = time.time() - session_start_time
         self.retry_info = retry_info
+        self.retry_messages = retry_messages
 
     @property
     def counts(self) -> Dict[str, int]:
@@ -48,26 +50,12 @@ class TestResultsFormatter:
         }
 
     @property
-    def retry_counts(self) -> Dict[str, int]:
-        retried_tests = len(self.retry_info)
-        total_retries = sum(info['attempts'] - 1 for info in self.retry_info.values())
-        return {
-            'retried_tests': retried_tests,
-            'total_retries': total_retries
-        }
-
-    @property
     def has_failures(self) -> bool:
         counts = self.counts
         return counts['failed'] > 0 or counts['error'] > 0
 
-    @property
-    def has_retries(self) -> bool:
-        return len(self.retry_info) > 0
-
     def format_summary_message(self, env: str, report_url: Optional[str]) -> str:
         counts = self.counts
-        retry_counts = self.retry_counts
 
         results_section = (
             f" ‎ 🚀 Passed: *{counts['passed']}*\n"
@@ -75,12 +63,6 @@ class TestResultsFormatter:
             f" 😐 Skipped: *{counts['skipped']}*\n"
             f" 🗿 Errors: *{counts['error']}*\n"
         )
-
-        if self.has_retries:
-            results_section += (
-                f" 🔄 Retried Tests: *{retry_counts['retried_tests']}*\n"
-                f" 🔁 Total Retries: *{retry_counts['total_retries']}*\n"
-            )
 
         start_time_str = time.strftime("*%d-%m-%Y %H:%M:%S*", time.localtime(self.session_start_time))
         duration_str = time.strftime("*%H:%M:%S*", time.gmtime(self.session_duration))
@@ -90,17 +72,15 @@ class TestResultsFormatter:
 
         return f"{results_section}{timing_section}{env_section}{url_section}"
 
-    def format_retry_details_message(self) -> Optional[str]:
-        if not self.has_retries:
+    def format_retry_output_message(self) -> Optional[str]:
+        if not self.retry_messages:
             return None
 
-        retry_details = ["🔄 *Tests that required retries:*\n"]
-        for test_name, info in self.retry_info.items():
-            status = "✅ Eventually Passed" if info['final_result'] == 'passed' else "❌ Still Failed"
-            retry_details.append(
-                f"• `{test_name}`\n  └ Attempts: *{info['attempts']}* - {status}"
-            )
-        return '\n'.join(retry_details)
+        return (
+            "\n\n*The following tests were retried:*\n\n" +
+            '\n'.join(self.retry_messages) +
+            "\n\n*End of test retry report.*"
+        )
 
 
 class TelegramNotifier:
@@ -114,7 +94,7 @@ class TelegramNotifier:
                 message_id = self._send_sticker(formatter.has_failures)
 
             self._send_summary_message(formatter, message_id)
-            self._send_retry_details_message(formatter)
+            self._send_retry_output_message(formatter)
 
         except requests.RequestException as e:
             logger.error("Error sending Telegram message: %s", str(e))
@@ -137,8 +117,8 @@ class TelegramNotifier:
             payload['reply_to_message_id'] = reply_to_id
         self._make_request('/sendMessage', payload)
 
-    def _send_retry_details_message(self, formatter: TestResultsFormatter) -> None:
-        retry_message = formatter.format_retry_details_message()
+    def _send_retry_output_message(self, formatter: TestResultsFormatter) -> None:
+        retry_message = formatter.format_retry_output_message()
         if not retry_message:
             return
         payload = {
@@ -161,9 +141,10 @@ class TelegramNotifier:
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_sessionstart(session):
-    global _session_start_time, _retry_info
+    global _session_start_time, _retry_info, _retry_messages
     _session_start_time = time.time()
     _retry_info = {}
+    _retry_messages = []
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -174,7 +155,7 @@ def pytest_runtest_call(item):
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
-    global _retry_info
+    global _retry_info, _retry_messages
     outcome = yield
     report = outcome.get_result()
 
@@ -183,6 +164,15 @@ def pytest_runtest_makereport(item, call):
 
     nodeid = item.nodeid
     attempt = item.stash.get(retry_key, 1)
+
+    if report.failed and attempt > 1:
+        message = f"    {nodeid} failed on attempt {attempt - 1}! Retrying!\n"
+        if hasattr(report.longrepr, 'reprcrash'):
+            message += f"        {report.longrepr.reprcrash.message}\n"
+        _retry_messages.append(message)
+
+    if report.passed and attempt > 1:
+        _retry_messages.append(f"    {nodeid} passed on attempt {attempt}!\n")
 
     if nodeid not in _retry_info:
         _retry_info[nodeid] = {
@@ -206,7 +196,8 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     formatter = TestResultsFormatter(
         terminalreporter.stats,
         _session_start_time or time.time(),
-        _retry_info
+        _retry_info,
+        _retry_messages
     )
     notifier = TelegramNotifier(telegram_config)
     notifier.send_test_results(formatter)
