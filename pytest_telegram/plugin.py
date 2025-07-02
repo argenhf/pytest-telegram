@@ -166,6 +166,12 @@ def pytest_sessionstart(session):
     _retry_info = {}
 
 
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_call(item):
+    current = item.stash.get(retry_key, 0)
+    item.stash[retry_key] = current + 1
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     global _retry_info
@@ -176,9 +182,7 @@ def pytest_runtest_makereport(item, call):
         return
 
     nodeid = item.nodeid
-
-    # Try to fetch retry attempt using stash if available
-    attempt = item.stash.get(retry_key, 0) + 1
+    attempt = item.stash.get(retry_key, 1)
 
     if nodeid not in _retry_info:
         _retry_info[nodeid] = {
