@@ -168,18 +168,29 @@ def pytest_sessionstart(session):
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
-    global _retry_info, _test_attempt_counter
+    global _retry_info
     outcome = yield
     report = outcome.get_result()
-    if call.when == "call":
-        nodeid = item.nodeid
-        _test_attempt_counter[nodeid] = _test_attempt_counter.get(nodeid, 0) + 1
-        attempts = _test_attempt_counter[nodeid]
-        if attempts > 1:
-            _retry_info[nodeid] = {
-                'attempts': attempts,
-                'final_result': report.outcome
-            }
+
+    if call.when != "call":
+        return
+
+    nodeid = item.nodeid
+
+    attempt = None
+    for attr in ["execution_count", "_pytest_retry_count", "_retry_count", "retries"]:
+        if hasattr(item, attr):
+            attempt = getattr(item, attr)
+            break
+
+    if attempt is None:
+        attempt = 1
+
+    if nodeid not in _retry_info:
+        _retry_info[nodeid] = {'attempts': attempt, 'final_result': report.outcome}
+    else:
+        _retry_info[nodeid]['attempts'] = max(_retry_info[nodeid]['attempts'], attempt)
+        _retry_info[nodeid]['final_result'] = report.outcome
 
 
 @pytest.hookimpl(trylast=True)
